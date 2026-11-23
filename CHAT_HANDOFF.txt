@@ -1,0 +1,4 @@
+﻿Проект: Nail Studio MVP (Next.js 15.1.6, App Router, .jsx/.js без tsconfig.json).
+Путь: C:\Users\Илья\nail-studio
+Бэкап: Desktop\nail-studio-backup
+Текущая точка: нужно исправить синтаксис app\layout.jsx (убрать пробел в lang="ru"), дождаться отображения Nail Studio MVP на localhost:3000 и подключить логику чата / Supabase / Groq / Telegram.
