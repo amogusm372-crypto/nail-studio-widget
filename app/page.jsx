@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 import { useState } from 'react';
 
 export default function Home() {
@@ -23,6 +23,8 @@ export default function Home() {
         body: JSON.stringify({ message: text, history: nextHistory.slice(-10) })
       });
       const data = await res.json();
+      if (data.warnings) console.warn('[chat warnings]', data.warnings);
+      if (!res.ok) console.error('[chat] HTTP', res.status, data);
       const reply = data.reply || data.message || data.error || JSON.stringify(data);
       setMessages([...nextHistory, { role: 'assistant', content: reply }]);
     } catch (err) {
