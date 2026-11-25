@@ -1,7 +1,7 @@
-// Webhook бота: отвечает на /start и показывает chat_id.
-// Регистрация (один раз, подставьте значения):
-//   https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://nail-studio-widget-demo.netlify.app/api/telegram&secret_token=<TELEGRAM_WEBHOOK_SECRET>
-// TELEGRAM_WEBHOOK_SECRET — любая строка из латиницы/цифр/_/-, задаётся и в Netlify, и в setWebhook.
+// Webhook бота: на /start отвечает пользователю его chat_id.
+// Так клиент получает свой chat_id и присылает его вам (вписываете в widgets.telegram_chat_id).
+// Регистрация (один раз, подставьте свои значения):
+//   https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<сайт>/api/telegram&secret_token=<TELEGRAM_WEBHOOK_SECRET>
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
@@ -28,13 +28,13 @@ export async function POST(req) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: chatId,
-          text: `Привет! Я бот заявок студии.\nВаш chat_id: ${chatId}\nЕсли он совпадает с TELEGRAM_CHAT_ID — заявки будут приходить сюда.`,
+          text: `Вітаю! Це бот, який надсилатиме вам заявки з чату.\n\nВаш chat_id: ${chatId}\n\nНадішліть це число тому, хто вас підключає.`,
         }),
         signal: AbortSignal.timeout(6000),
       });
       if (!res.ok) console.error(`[tg-webhook] sendMessage HTTP ${res.status}`);
     } catch (e) {
-      console.error('[tg-webhook] ошибка отправки:', String(e?.message ?? e).replaceAll(token, '***'));
+      console.error('[tg-webhook] помилка відправки:', String(e?.message ?? e).replaceAll(token, '***'));
     }
   }
 
