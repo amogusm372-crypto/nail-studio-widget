@@ -1,266 +1,170 @@
 /*!
- * AI Lead-Capture Widget — vanilla JS, zero dependencies.
- * Usage: <script src="https://YOUR-APP.netlify.app/widget.js" data-widget-id="UUID" async></script>
- * Optional: data-api-base="https://other-origin" to override the API origin.
+ * Chat widget loader (vanilla JS, без зависимостей).
+ * Подключение:
+ *   <script src="https://ВАШ-САЙТ/widget.js" data-client="slug" data-color="#f97316" async></script>
+ * Необязательно: data-greeting="Текст облачка"  data-delay="10000" (мс до облачка)
  */
 (function () {
   'use strict';
+  if (window.__chatWidgetLoaded) return;
+  window.__chatWidgetLoaded = true;
 
   var script =
-    document.currentScript || document.querySelector('script[data-widget-id]');
+    document.currentScript || document.querySelector('script[data-client][src*="widget.js"]');
   if (!script) return;
 
-  var widgetId = script.getAttribute('data-widget-id');
-  if (!widgetId) {
-    console.warn('[widget] Missing data-widget-id attribute.');
+  var slug = String(script.getAttribute('data-client') || '').trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]{1,48}$/.test(slug)) {
+    console.warn('[chat-widget] укажите data-client="slug" клиента');
     return;
   }
 
-  // Prevent double-mounting if the snippet is pasted twice.
-  var HOST_ID = 'lead-widget-host-' + widgetId;
-  if (document.getElementById(HOST_ID)) return;
+  var colorAttr = String(script.getAttribute('data-color') || '').trim();
+  var color = /^#[0-9a-f]{6}$/i.test(colorAttr) ? colorAttr : '#f97316';
+  var greeting = String(
+    script.getAttribute('data-greeting') || 'Вітаю! Маєте питання? Напишіть — відповімо одразу 👋',
+  ).slice(0, 140);
+  var delayAttr = Number(script.getAttribute('data-delay'));
+  var delay = isFinite(delayAttr) && script.hasAttribute('data-delay') ? Math.max(0, delayAttr) : 10000;
 
-  var apiBase = script.getAttribute('data-api-base');
-  if (!apiBase) {
-    try {
-      apiBase = new URL(script.src, window.location.href).origin;
-    } catch (e) {
-      apiBase = '';
-    }
+  var origin;
+  try {
+    origin = new URL(script.src, location.href).origin;
+  } catch (e) {
+    return;
   }
-  var API_URL = apiBase + '/api/chat';
+  var frameUrl = origin + '/w/' + encodeURIComponent(slug) + '?embed=true';
+  var seenKey = 'chat-widget-greeted-' + slug;
 
-  var MAX_HISTORY = 10;
-  var MAX_INPUT = 1000;
-  var FALLBACK_REPLY =
-    'Sorry, something went wrong. Please leave your phone or email and we will get back to you.';
+  var CSS =
+    ':host{all:initial}' +
+    '*{box-sizing:border-box}' +
+    '.btn{position:fixed;right:20px;bottom:calc(20px + env(safe-area-inset-bottom,0px));width:60px;height:60px;' +
+    'border-radius:50%;border:0;padding:0;background:' + color + ';color:#fff;cursor:pointer;display:grid;place-items:center;' +
+    'box-shadow:0 8px 24px rgba(0,0,0,.28);transition:transform .15s ease}' +
+    '.btn:hover{transform:scale(1.07)}' +
+    '.btn:focus-visible{outline:3px solid #fff;outline-offset:2px}' +
+    '.btn svg{width:28px;height:28px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}' +
+    '.btn .ic-close{display:none}' +
+    '.is-open .btn .ic-chat{display:none}.is-open .btn .ic-close{display:block}' +
+    '.pulse{animation:pl 2.2s ease-out 3}' +
+    '@keyframes pl{0%{box-shadow:0 0 0 0 ' + color + '88,0 8px 24px rgba(0,0,0,.28)}' +
+    '70%{box-shadow:0 0 0 18px ' + color + '00,0 8px 24px rgba(0,0,0,.28)}' +
+    '100%{box-shadow:0 0 0 0 ' + color + '00,0 8px 24px rgba(0,0,0,.28)}}' +
+    '.bubble{position:fixed;right:20px;bottom:calc(92px + env(safe-area-inset-bottom,0px));max-width:260px;' +
+    'background:#fff;color:#16181d;padding:12px 30px 12px 14px;border-radius:16px 16px 4px 16px;' +
+    'box-shadow:0 10px 30px rgba(0,0,0,.25);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;' +
+    'cursor:pointer;opacity:0;transform:translateY(8px);pointer-events:none;transition:opacity .25s,transform .25s}' +
+    '.bubble.show{opacity:1;transform:none;pointer-events:auto}' +
+    '.bubble .x{position:absolute;top:3px;right:6px;border:0;background:none;color:#8a8f9c;font-size:20px;line-height:1;cursor:pointer;padding:2px 4px}' +
+    '.panel{position:fixed;right:20px;bottom:calc(92px + env(safe-area-inset-bottom,0px));width:380px;' +
+    'height:min(640px,calc(100vh - 120px));border-radius:16px;overflow:hidden;background:#0b0d12;' +
+    'box-shadow:0 20px 60px rgba(0,0,0,.4);display:none}' +
+    '.is-open .panel{display:block}' +
+    '.panel iframe{width:100%;height:100%;border:0;display:block}' +
+    '@media(max-width:480px){.panel{inset:0;width:100%;height:100%;border-radius:0}' +
+    '.is-open .btn,.is-open .bubble{display:none}}';
 
-  var config = {
-    color: '#2563eb',
-    welcomeMessage:
-      'Hi! Ask me anything or leave your contact and we will reach out.',
-    businessName: 'Chat',
-  };
+  var host, root, wrap, btn, bubble, panel, frame;
+  var loaded = false;
+  var timer = null;
 
-  var history = []; // [{ role: 'user' | 'assistant', content: string }]
-  var isOpen = false;
-  var isSending = false;
-
-  // ---------------------------------------------------------------- DOM
-  var host = document.createElement('div');
-  host.id = HOST_ID;
-  host.style.cssText = 'all:initial;position:fixed;z-index:2147483647;';
-  var root = host.attachShadow({ mode: 'open' });
-
-  var css = [
-    ':host{all:initial}',
-    '*{box-sizing:border-box;margin:0;padding:0}',
-    '.w{--c:#2563eb;position:fixed;right:20px;bottom:20px;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#111827}',
-    '.fab{width:56px;height:56px;border:0;border-radius:50%;background:var(--c);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .15s ease}',
-    '.fab:hover{transform:scale(1.06)}',
-    '.fab:focus-visible,.send:focus-visible,.close:focus-visible{outline:3px solid #fff;outline-offset:-5px;box-shadow:0 0 0 3px var(--c)}',
-    '.fab svg{width:26px;height:26px;fill:currentColor}',
-    '.panel{position:absolute;right:0;bottom:70px;width:360px;max-width:calc(100vw - 24px);height:520px;max-height:calc(100vh - 110px);background:#fff;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.28);display:none;flex-direction:column;overflow:hidden}',
-    '.panel.open{display:flex;animation:pop .18s ease-out}',
-    '@keyframes pop{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}',
-    '.head{background:var(--c);color:#fff;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:8px}',
-    '.title{font-weight:600;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-    '.close{background:transparent;border:0;color:#fff;cursor:pointer;font-size:22px;line-height:1;padding:2px 6px;border-radius:6px}',
-    '.msgs{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:8px;background:#f7f8fa}',
-    '.m{max-width:82%;padding:9px 12px;border-radius:14px;word-wrap:break-word;overflow-wrap:anywhere;white-space:pre-wrap}',
-    '.m.bot{align-self:flex-start;background:#fff;border:1px solid #e5e7eb;border-bottom-left-radius:4px}',
-    '.m.user{align-self:flex-end;background:var(--c);color:#fff;border-bottom-right-radius:4px}',
-    '.typing{align-self:flex-start;background:#fff;border:1px solid #e5e7eb;border-radius:14px;border-bottom-left-radius:4px;padding:11px 14px;display:none;gap:4px}',
-    '.typing.on{display:flex}',
-    '.dot{width:6px;height:6px;border-radius:50%;background:#9ca3af;animation:b 1.2s infinite ease-in-out}',
-    '.dot:nth-child(2){animation-delay:.15s}.dot:nth-child(3){animation-delay:.3s}',
-    '@keyframes b{0%,60%,100%{transform:translateY(0);opacity:.5}30%{transform:translateY(-4px);opacity:1}}',
-    '.form{display:flex;gap:8px;padding:10px;border-top:1px solid #e5e7eb;background:#fff}',
-    '.in{flex:1;min-width:0;border:1px solid #d1d5db;border-radius:10px;padding:10px 12px;font:inherit;color:inherit;outline:none;background:#fff}',
-    '.in:focus{border-color:var(--c);box-shadow:0 0 0 2px color-mix(in srgb,var(--c) 25%,transparent)}',
-    '.send{border:0;border-radius:10px;background:var(--c);color:#fff;padding:0 14px;font:inherit;font-weight:600;cursor:pointer}',
-    '.send:disabled{opacity:.5;cursor:not-allowed}',
-    '@media (max-width:480px){.w{right:12px;bottom:12px}.panel{position:fixed;right:12px;left:12px;bottom:80px;width:auto;max-width:none}}',
-    '@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}',
-  ].join('');
-
-  var style = document.createElement('style');
-  style.textContent = css;
-
-  var wrap = el('div', 'w');
-
-  var fab = el('button', 'fab');
-  fab.type = 'button';
-  fab.setAttribute('aria-label', 'Open chat');
-  fab.innerHTML =
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg>';
-
-  var panel = el('div', 'panel');
-  panel.setAttribute('role', 'dialog');
-  panel.setAttribute('aria-label', 'Chat');
-
-  var head = el('div', 'head');
-  var title = el('div', 'title');
-  title.textContent = config.businessName;
-  var closeBtn = el('button', 'close');
-  closeBtn.type = 'button';
-  closeBtn.setAttribute('aria-label', 'Close chat');
-  closeBtn.textContent = '\u00d7';
-  head.appendChild(title);
-  head.appendChild(closeBtn);
-
-  var msgs = el('div', 'msgs');
-  msgs.setAttribute('aria-live', 'polite');
-
-  var typing = el('div', 'typing');
-  typing.setAttribute('aria-label', 'Assistant is typing');
-  typing.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
-
-  var form = el('form', 'form');
-  var input = el('input', 'in');
-  input.type = 'text';
-  input.placeholder = 'Type your message\u2026';
-  input.maxLength = MAX_INPUT;
-  input.setAttribute('aria-label', 'Your message');
-  input.autocomplete = 'off';
-  var sendBtn = el('button', 'send');
-  sendBtn.type = 'submit';
-  sendBtn.textContent = 'Send';
-  form.appendChild(input);
-  form.appendChild(sendBtn);
-
-  msgs.appendChild(typing);
-  panel.appendChild(head);
-  panel.appendChild(msgs);
-  panel.appendChild(form);
-  wrap.appendChild(panel);
-  wrap.appendChild(fab);
-  root.appendChild(style);
-  root.appendChild(wrap);
-
-  // ------------------------------------------------------------ Helpers
-  function el(tag, cls) {
+  function el(tag, cls, html) {
     var n = document.createElement(tag);
     if (cls) n.className = cls;
+    if (html) n.innerHTML = html;
     return n;
   }
 
-  function applyConfig() {
-    wrap.style.setProperty('--c', config.color);
-    title.textContent = config.businessName;
+  function markGreeted() {
+    try { sessionStorage.setItem(seenKey, '1'); } catch (e) { /* ignore */ }
+  }
+  function wasGreeted() {
+    try { return sessionStorage.getItem(seenKey) === '1'; } catch (e) { return false; }
   }
 
-  function addMessage(role, text) {
-    var m = el('div', 'm ' + (role === 'user' ? 'user' : 'bot'));
-    m.textContent = text; // textContent: never interpret model/visitor text as HTML
-    msgs.insertBefore(m, typing);
-    scrollDown();
+  function hideBubble() {
+    clearTimeout(timer);
+    bubble.classList.remove('show');
+    markGreeted();
   }
 
-  function scrollDown() {
-    msgs.scrollTop = msgs.scrollHeight;
+  function open() {
+    if (!loaded) { frame.src = frameUrl; loaded = true; }
+    wrap.classList.add('is-open');
+    btn.setAttribute('aria-expanded', 'true');
+    hideBubble();
+  }
+  function close() {
+    wrap.classList.remove('is-open');
+    btn.setAttribute('aria-expanded', 'false');
+  }
+  function toggle() {
+    if (wrap.classList.contains('is-open')) close(); else open();
   }
 
-  function setTyping(on) {
-    typing.classList.toggle('on', on);
-    if (on) scrollDown();
-  }
+  function mount() {
+    host = document.createElement('div');
+    host.setAttribute('data-chat-widget', slug);
+    host.style.cssText = 'all:initial;position:fixed;right:0;bottom:0;z-index:2147483000;';
+    root = host.attachShadow({ mode: 'open' });
 
-  function setSending(on) {
-    isSending = on;
-    sendBtn.disabled = on;
-    setTyping(on);
-  }
+    var style = document.createElement('style');
+    style.textContent = CSS;
+    wrap = el('div', '');
 
-  function toggle(open) {
-    isOpen = typeof open === 'boolean' ? open : !isOpen;
-    panel.classList.toggle('open', isOpen);
-    fab.setAttribute('aria-label', isOpen ? 'Close chat' : 'Open chat');
-    if (isOpen) {
-      setTimeout(function () { input.focus(); }, 50);
-      scrollDown();
+    btn = el(
+      'button',
+      'btn pulse',
+      '<svg class="ic-chat" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.7 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>' +
+        '<svg class="ic-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+    );
+    btn.type = 'button';
+    btn.setAttribute('aria-label', 'Відкрити чат');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.addEventListener('click', toggle);
+
+    bubble = el('div', 'bubble');
+    bubble.setAttribute('role', 'status');
+    bubble.appendChild(document.createTextNode(greeting));
+    var x = el('button', 'x', '&times;');
+    x.type = 'button';
+    x.setAttribute('aria-label', 'Закрити');
+    x.addEventListener('click', function (e) { e.stopPropagation(); hideBubble(); });
+    bubble.appendChild(x);
+    bubble.addEventListener('click', open);
+
+    panel = el('div', 'panel');
+    frame = document.createElement('iframe');
+    frame.title = 'Чат';
+    frame.setAttribute('allow', '');
+    frame.setAttribute('referrerpolicy', 'no-referrer-when-downgrade');
+    panel.appendChild(frame);
+
+    wrap.appendChild(style);
+    wrap.appendChild(panel);
+    wrap.appendChild(bubble);
+    wrap.appendChild(btn);
+    root.appendChild(wrap);
+    document.body.appendChild(host);
+
+    if (!wasGreeted()) {
+      timer = setTimeout(function () {
+        if (!wrap.classList.contains('is-open')) bubble.classList.add('show');
+      }, delay);
     }
   }
 
-  // ------------------------------------------------------------ Network
-  function loadConfig() {
-    return fetch(API_URL + '?widgetId=' + encodeURIComponent(widgetId))
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (data) {
-        if (!data) return;
-        if (typeof data.color === 'string' && /^#[0-9a-f]{3,8}$/i.test(data.color)) {
-          config.color = data.color;
-        }
-        if (typeof data.welcomeMessage === 'string' && data.welcomeMessage) {
-          config.welcomeMessage = data.welcomeMessage;
-        }
-        if (typeof data.businessName === 'string' && data.businessName) {
-          config.businessName = data.businessName;
-        }
-      })
-      .catch(function () { /* keep defaults */ });
-  }
-
-  function sendMessage(text) {
-    var payload = {
-      widgetId: widgetId,
-      message: text,
-      history: history.slice(-MAX_HISTORY),
-    };
-
-    addMessage('user', text);
-    history.push({ role: 'user', content: text });
-    setSending(true);
-
-    fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-      .then(function (r) {
-        return r.json().then(function (data) { return { ok: r.ok, data: data }; });
-      })
-      .then(function (res) {
-        var reply =
-          res.data && typeof res.data.reply === 'string' && res.data.reply
-            ? res.data.reply
-            : FALLBACK_REPLY;
-        addMessage('assistant', reply);
-        history.push({ role: 'assistant', content: reply });
-      })
-      .catch(function () {
-        addMessage('assistant', FALLBACK_REPLY);
-      })
-      .then(function () {
-        setSending(false);
-        input.focus();
-      });
-  }
-
-  // ------------------------------------------------------------- Events
-  fab.addEventListener('click', function () { toggle(); });
-  closeBtn.addEventListener('click', function () { toggle(false); });
+  // Кнопка «×» внутри чата просит родителя закрыть панель.
+  window.addEventListener('message', function (e) {
+    if (e.origin !== origin) return;
+    if (e.data && e.data.type === 'chat-widget:close') close();
+  });
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && isOpen) toggle(false);
+    if (e.key === 'Escape' && wrap && wrap.classList.contains('is-open')) close();
   });
 
-  form.addEventListener('submit', function (e) {
-    e.preventDefault();
-    var text = input.value.trim();
-    if (!text || isSending) return;
-    input.value = '';
-    sendMessage(text);
-  });
-
-  // --------------------------------------------------------------- Boot
-  function mount() {
-    document.body.appendChild(host);
-    applyConfig();
-    loadConfig().then(function () {
-      applyConfig();
-      addMessage('assistant', config.welcomeMessage);
-    });
-  }
+  window.ChatWidget = { open: function () { if (wrap) open(); }, close: function () { if (wrap) close(); } };
 
   if (document.body) mount();
   else document.addEventListener('DOMContentLoaded', mount);
