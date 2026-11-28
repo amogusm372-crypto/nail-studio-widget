@@ -74,7 +74,9 @@ export default function Chat({ widget, embed = false }) {
   const theme = THEMES[widget.theme] ?? THEMES.general;
   const welcome = isDbDefault(widget.welcome) ? DEFAULT_WELCOME : widget.welcome;
 
-  const [messages, setMessages] = useState([{ role: 'assistant', content: welcome, chips: theme.chips }]);
+  const [messages, setMessages] = useState([
+    { role: 'assistant', content: welcome, chips: widget.chips?.length ? widget.chips : theme.chips },
+  ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef(null);
